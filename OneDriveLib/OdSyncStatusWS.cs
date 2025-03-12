@@ -66,6 +66,7 @@ namespace OdSyncService
         {
             //const string hklm = "HKEY_LOCAL_MACHINE";
             const string subkeyString = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager\"; // SkyDrive\UserSyncRoots\";
+            var detail = new StatusDetail();
 
             using (var key = Registry.LocalMachine.OpenSubKey(subkeyString))
             {
@@ -81,54 +82,59 @@ namespace OdSyncService
                     }
                     foreach (var subkey in key.GetSubKeyNames())
                     {
-                        var displayKey = key.OpenSubKey(subkey);
-                        var displayName = displayKey?.GetValue("DisplayNameResource") as string;
-                        using (var userKey = key.OpenSubKey(String.Format("{0}{1}", subkey, @"\UserSyncRoots")))
+                        try
                         {
-                            if (userKey != null && userKey.Name.Contains(UserSID))
+                            detail = new StatusDetail();
+                            var displayKey = key.OpenSubKey(subkey);
+                            var displayName = displayKey?.GetValue("DisplayNameResource") as string;
+                            using (var userKey = key.OpenSubKey(String.Format("{0}{1}", subkey, @"\UserSyncRoots")))
                             {
-                                
-                                
-                                foreach (var valueName in userKey.GetValueNames())
+                                if (userKey != null && userKey.Name.Contains(UserSID))
                                 {
-                                    var detail = new StatusDetail();
-                                    try
+                                    
+                                    
+                                    foreach (var valueName in userKey.GetValueNames())
                                     {
-                                        var id = new SecurityIdentifier(valueName);
-                                        string userName = id.Translate(typeof(NTAccount)).Value;
-                                        detail.UserName = userName;
-                                        detail.UserSID = valueName;
-                                        detail.DisplayName = displayName;
-                                        detail.SyncRootId = subkey;
-                                        
-                                        string[] parts = userKey.Name.Split('!');
-
-                                        if (parts.Length > 1)
+                                        detail = new StatusDetail();
+                                        try
                                         {
-                                            detail.ServiceType = parts[Math.Min(2, parts.Length - 1)].Split('|')[0];
-                                        } else
-                                        {
-                                            detail.ServiceType = "INVALID";
+                                            var id = new SecurityIdentifier(valueName);
+                                            string userName = id.Translate(typeof(NTAccount)).Value;
+                                            detail.UserName = userName;
+                                            detail.UserSID = valueName;
+                                            detail.DisplayName = displayName;
+                                            detail.SyncRootId = subkey;
+                                            
+                                            string[] parts = userKey.Name.Split('!');
+    
+                                            if (parts.Length > 1)
+                                            {
+                                                detail.ServiceType = parts[Math.Min(2, parts.Length - 1)].Split('|')[0];
+                                            } else
+                                            {
+                                                detail.ServiceType = "INVALID";
+                                            }
                                         }
+                                        catch (Exception ex)
+                                        {
+                                            detail.UserName = String.Format("{0}: {1}", ex.GetType().ToString(),
+                                                ex.Message);
+                                            OneDriveLib.WriteLog.WriteErrorEvent("OneDrive " + detail.UserName);
+                                        }
+                                        detail.LocalPath = userKey.GetValue(valueName) as string;
+                                        detail.StatusString = GetStatus(detail.LocalPath).ToString();
                                     }
-                                    catch (Exception ex)
-                                    {
-                                        detail.UserName = String.Format("{0}: {1}", ex.GetType().ToString(),
-                                            ex.Message);
-                                        OneDriveLib.WriteLog.WriteErrorEvent("OneDrive " + detail.UserName);
-                                    }
-                                    detail.LocalPath = userKey.GetValue(valueName) as string;
-                                    detail.StatusString = GetStatus(detail.LocalPath).ToString();
-                                    yield return detail;
                                 }
                             }
                         }
+                        catch (SecurityException)
+                        {
+                            detail = new StatusDetail() { Status = ServiceStatus.OnDemandOrUnknown };
+                        }
+                        yield return detail;
                     }
                 }
             }
-
-
-
         }
 
         public IEnumerable<StatusDetail> GetStatusInternalGroove()
@@ -201,6 +207,8 @@ namespace OdSyncService
 
             foreach (var status in GetStatusInternal())
             {
+                if (status.SyncRootId is null)
+                    continue;
                 OneDriveState state = new OneDriveState();
                 var hr = API.GetStateBySyncRootId(status.SyncRootId, out state);
                 if(hr == 0)
